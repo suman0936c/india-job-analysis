@@ -1,5 +1,7 @@
 # India Data Analyst Job Market Dashboard
 
+https://dojob-analysis.streamlit.app/
+
 I built this to figure out something I actually wanted to know for myself: what do
 data analyst job postings in India actually ask for, and does that match what
 everyone online tells beginners to learn? Most "top skills" lists you find online
