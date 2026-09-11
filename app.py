@@ -143,7 +143,7 @@ st.sidebar.caption(
 # Main
 # ---------------------------------------------------------------------------
 
-st.title("📊 India Data Analyst Job Market")
+st.title("India Data Analyst Job Market")
 st.caption(
     "Pulled live from the [Adzuna API](https://developer.adzuna.com/). "
     "I built this because I wanted real numbers instead of another generic "
