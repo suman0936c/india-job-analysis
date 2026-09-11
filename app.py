@@ -22,7 +22,7 @@ import altair as alt
 
 st.set_page_config(
     page_title="India Data Analyst Job Market",
-    page_icon="📊",
+    page_icon="",
     layout="wide",
 )
 
