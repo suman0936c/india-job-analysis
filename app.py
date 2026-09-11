@@ -22,7 +22,7 @@ import altair as alt
 
 st.set_page_config(
     page_title="India Data Analyst Job Market",
-    page_icon="",
+    page_icon="📊",
     layout="wide",
 )
 
@@ -126,8 +126,10 @@ def load_to_sqlite(df: pd.DataFrame) -> sqlite3.Connection:
 
 st.sidebar.title("⚙️ Controls")
 
-app_id = st.sidebar.text_input("Adzuna App ID", type="password", value=st.secrets.get("ADZUNA_APP_ID", "") if hasattr(st, "secrets") else "")
-app_key = st.sidebar.text_input("Adzuna App Key", type="password", value=st.secrets.get("ADZUNA_APP_KEY", "") if hasattr(st, "secrets") else "")
+# Keys come from Streamlit secrets only -- never shown or editable in the UI.
+# Keeps this safe to share as a public link without exposing my API credentials.
+app_id = st.secrets.get("ADZUNA_APP_ID", "") if hasattr(st, "secrets") else ""
+app_key = st.secrets.get("ADZUNA_APP_KEY", "") if hasattr(st, "secrets") else ""
 
 search_term = st.sidebar.text_input("Job search term", value="data analyst")
 num_pages = st.sidebar.slider("Pages to fetch (50 jobs/page)", min_value=2, max_value=20, value=10)
@@ -143,7 +145,7 @@ st.sidebar.caption(
 # Main
 # ---------------------------------------------------------------------------
 
-st.title("India Data Analyst Job Market")
+st.title("📊 India Data Analyst Job Market")
 st.caption(
     "Pulled live from the [Adzuna API](https://developer.adzuna.com/). "
     "I built this because I wanted real numbers instead of another generic "
@@ -152,7 +154,11 @@ st.caption(
 )
 
 if not app_id or not app_key:
-    st.info("Enter your Adzuna App ID and App Key in the sidebar, then click **Fetch / Refresh live data** to begin.")
+    st.error(
+        "Adzuna API keys aren't configured for this app. "
+        "(If this is your deployment: add ADZUNA_APP_ID and ADZUNA_APP_KEY "
+        "under Settings → Secrets in Streamlit Cloud, then reboot the app.)"
+    )
     st.stop()
 
 if refresh or "jobs_df" not in st.session_state:
