@@ -22,7 +22,7 @@ import altair as alt
 
 st.set_page_config(
     page_title="India Data Analyst Job Market",
-    page_icon="📊",
+    page_icon="",
     layout="wide",
 )
 
@@ -134,7 +134,7 @@ app_key = st.secrets.get("ADZUNA_APP_KEY", "") if hasattr(st, "secrets") else ""
 search_term = st.sidebar.text_input("Job search term", value="data analyst")
 num_pages = st.sidebar.slider("Pages to fetch (50 jobs/page)", min_value=2, max_value=20, value=10)
 
-refresh = st.sidebar.button("🔄 Fetch / Refresh live data", type="primary")
+refresh = st.sidebar.button(" Fetch / Refresh live data", type="primary")
 
 st.sidebar.caption(
     "Results are cached for an hour so I'm not re-hitting the API on every click. "
@@ -145,7 +145,7 @@ st.sidebar.caption(
 # Main
 # ---------------------------------------------------------------------------
 
-st.title("📊 India Data Analyst Job Market")
+st.title(" India Data Analyst Job Market")
 st.caption(
     "Pulled live from the [Adzuna API](https://developer.adzuna.com/). "
     "I built this because I wanted real numbers instead of another generic "
