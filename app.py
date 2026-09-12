@@ -1,269 +1,128 @@
-"""
-India Data Analyst Job Market Dashboard
-
-Started this as a one-off notebook to answer a question I had: what do DA job
-postings in India actually ask for, and is that different from the generic
-"learn SQL and Python" advice you see everywhere. Turned it into a live app
-so it doesn't go stale after one pull.
-
-Pulls from the Adzuna API, does some regex skill-matching on job descriptions,
-and throws it in a little in-memory SQLite db so I could actually practice
-writing SQL instead of just doing everything in Pandas.
-"""
-
+"""India Data Analyst Job Market Explorer."""
+from __future__ import annotations
+import html
 import re
 import sqlite3
 import time
-
+from datetime import datetime, timezone
+import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
-import altair as alt
 
-st.set_page_config(
-    page_title="India Data Analyst Job Market",
-    page_icon="",
-    layout="wide",
-)
-
-# these are the skills I'm checking for -- built this list by first running a
-# word-frequency count on ~1000 descriptions and seeing what actually showed up,
-# rather than just guessing. still probably missing some.
-
-SKILLS = {
-    'SQL': r'\bsql\b',
-    'Python': r'\bpython\b',
-    'Excel': r'\bexcel\b',
-    'Power BI': r'\bpower\s?bi\b',
-    'Tableau': r'\btableau\b',
-    'R': r'\br\b(?!\.a)',
-    'SAS': r'\bsas\b',
-    'SPSS': r'\bspss\b',
-    'Machine Learning': r'\bmachine learning\b',
-    'AWS': r'\baws\b',
-    'Azure': r'\bazure\b',
-    'ETL': r'\betl\b',
-    'Big Data': r'\bbig data\b',
-    'Data Warehousing': r'\bdata warehous',
-    'Dashboards': r'\bdashboard',
-    'Reporting': r'\breporting\b',
-    'Statistics': r'\bstatistic',
-    'Alteryx': r'\balteryx\b',
-    'Qlik': r'\bqlik',
-    'Google Analytics': r'\bgoogle analytics\b',
-}
-
+st.set_page_config(page_title="India Data Analyst Job Market", page_icon="📊", layout="wide")
+SKILLS = {"SQL":r"\bsql\b","Python":r"\bpython\b","Excel":r"\bexcel\b","Power BI":r"\bpower\s?bi\b","Tableau":r"\btableau\b","R":r"\br\b(?!\.a)","SAS":r"\bsas\b","SPSS":r"\bspss\b","Machine Learning":r"\bmachine learning\b","AWS":r"\baws\b","Azure":r"\bazure\b","ETL":r"\betl\b","Big Data":r"\bbig data\b","Data Warehousing":r"\bdata warehous","Dashboards":r"\bdashboard","Reporting":r"\breporting\b","Statistics":r"\bstatistic","Alteryx":r"\balteryx\b","Qlik":r"\bqlik","Google Analytics":r"\bgoogle analytics\b"}
 RESULTS_PER_PAGE = 50
+BASE_COLUMNS = ["id","title","description","company","location","category","salary_min","salary_max","salary_is_predicted","created","redirect_url"]
 
+def secret_value(key: str) -> str:
+    try:
+        return str(st.secrets.get(key, ""))
+    except (FileNotFoundError, KeyError):
+        return ""
 
-# ---------------------------------------------------------------------------
-# Data pulling (cached so we don't hit the API on every interaction)
-# ---------------------------------------------------------------------------
+def clean_description(value: str) -> str:
+    return re.sub(r"<[^>]+>", " ", html.unescape(value or ""))
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_jobs(app_id: str, app_key: str, what: str, country: str, num_pages: int) -> pd.DataFrame:
-    """Grab job postings from Adzuna page by page and flatten into a DataFrame.
-    Cached for an hour so clicking around the filters doesn't spam the API."""
-    all_jobs = []
-
-    for page in range(1, num_pages + 1):
-        url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
-        params = {
-            "app_id": app_id,
-            "app_key": app_key,
-            "results_per_page": RESULTS_PER_PAGE,
-            "what": what,
-        }
-        response = requests.get(url, params=params, timeout=15)
-        if response.status_code != 200:
-            break  # bad key or rate limited, just stop instead of crashing
-
-        results = response.json().get("results", [])
-        if not results:
-            break  # ran out of pages
-
-        all_jobs.extend(results)
-        time.sleep(0.3)  # don't hammer their API
-
-    clean_jobs = []
-    for job in all_jobs:
-        clean_jobs.append({
-            "id": job.get("id"),
-            "title": job.get("title"),
-            "description": job.get("description") or "",
-            "company": job.get("company", {}).get("display_name"),
-            "location": job.get("location", {}).get("display_name"),
-            "category": job.get("category", {}).get("label"),
-            "salary_min": job.get("salary_min"),
-            "salary_max": job.get("salary_max"),
-            "salary_is_predicted": job.get("salary_is_predicted"),
-            "created": job.get("created"),
-            "redirect_url": job.get("redirect_url"),
-        })
-
-    df = pd.DataFrame(clean_jobs)
+def fetch_jobs(app_id: str, app_key: str, what: str, country: str, num_pages: int) -> tuple[pd.DataFrame, str]:
+    """Fetch Adzuna pages, deduplicate job IDs, and return an audit note."""
+    jobs, fetched_pages = [], 0
+    try:
+        with requests.Session() as session:
+            for page in range(1, num_pages + 1):
+                response = session.get(f"https://api.adzuna.com/v1/api/jobs/{country}/search/{page}", params={"app_id":app_id,"app_key":app_key,"results_per_page":RESULTS_PER_PAGE,"what":what}, timeout=20)
+                response.raise_for_status()
+                results = response.json().get("results", [])
+                if not results:
+                    break
+                jobs.extend(results); fetched_pages += 1; time.sleep(0.25)
+    except requests.RequestException as exc:
+        return pd.DataFrame(columns=BASE_COLUMNS + list(SKILLS)), f"API request failed after {fetched_pages} page(s): {exc}"
+    records = [{"id":j.get("id"),"title":j.get("title"),"description":clean_description(j.get("description","")),"company":j.get("company",{}).get("display_name"),"location":j.get("location",{}).get("display_name"),"category":j.get("category",{}).get("label"),"salary_min":j.get("salary_min"),"salary_max":j.get("salary_max"),"salary_is_predicted":j.get("salary_is_predicted"),"created":j.get("created"),"redirect_url":j.get("redirect_url")} for j in jobs]
+    df = pd.DataFrame(records, columns=BASE_COLUMNS)
     if df.empty:
-        return df
+        return df, f"No postings returned across {fetched_pages} page(s)."
+    raw_rows = len(df); df = df.drop_duplicates(subset="id").copy()
+    for skill, pattern in SKILLS.items():
+        df[skill] = df["description"].str.contains(pattern, flags=re.IGNORECASE, regex=True, na=False)
+    return df, f"Fetched {raw_rows:,} rows across {fetched_pages} page(s); removed {raw_rows-len(df):,} duplicate job IDs."
 
-    df = df.drop_duplicates(subset="id")
+def sqlite_query(df: pd.DataFrame, query: str) -> pd.DataFrame:
+    with sqlite3.connect(":memory:") as conn:
+        df.to_sql("jobs", conn, if_exists="replace", index=False)
+        return pd.read_sql_query(query, conn)
 
-    for name, pattern in SKILLS.items():
-        df[name] = df["description"].str.contains(pattern, flags=re.IGNORECASE, regex=True, na=False)
-
-    return df
-
-
-def load_to_sqlite(df: pd.DataFrame) -> sqlite3.Connection:
-    # in-memory db, wiped every time -- just wanted a real SQL layer to query against
-    conn = sqlite3.connect(":memory:")
-    df.to_sql("jobs", conn, if_exists="replace", index=False)
-    return conn
-
-
-# ---------------------------------------------------------------------------
-# Sidebar controls
-# ---------------------------------------------------------------------------
-
-st.sidebar.title("⚙️ Controls")
-
-# Keys come from Streamlit secrets only -- never shown or editable in the UI.
-# Keeps this safe to share as a public link without exposing my API credentials.
-app_id = st.secrets.get("ADZUNA_APP_ID", "") if hasattr(st, "secrets") else ""
-app_key = st.secrets.get("ADZUNA_APP_KEY", "") if hasattr(st, "secrets") else ""
-
+st.sidebar.header("Controls")
+stored_app_id = secret_value("ADZUNA_APP_ID")
+stored_app_key = secret_value("ADZUNA_APP_KEY")
+app_id, app_key = stored_app_id, stored_app_key
+if stored_app_id and stored_app_key:
+    st.sidebar.success("API credentials configured securely.")
+else:
+    with st.sidebar.expander("Set up API credentials", expanded=False):
+        st.caption("For local use, prefer .streamlit/secrets.toml. Values entered here remain masked.")
+        app_id = st.text_input("Adzuna App ID", type="password", key="manual_app_id")
+        app_key = st.text_input("Adzuna App Key", type="password", key="manual_app_key")
 search_term = st.sidebar.text_input("Job search term", value="data analyst")
-num_pages = st.sidebar.slider("Pages to fetch (50 jobs/page)", min_value=2, max_value=20, value=10)
+num_pages = st.sidebar.slider("Pages to fetch", 2, 20, 10, help="Up to 50 postings per page.")
+refresh = st.sidebar.button("Fetch live data", type="primary")
+st.sidebar.caption("Results are cached for one hour. Select Fetch live data to refresh the API snapshot.")
 
-refresh = st.sidebar.button(" Fetch / Refresh live data", type="primary")
-
-st.sidebar.caption(
-    "Results are cached for an hour so I'm not re-hitting the API on every click. "
-    "Hit refresh if you want the latest postings."
-)
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-st.title(" India Data Analyst Job Market")
-st.caption(
-    "Pulled live from the [Adzuna API](https://developer.adzuna.com/). "
-    "I built this because I wanted real numbers instead of another generic "
-    "'top skills for data analysts' blog post. Skill detection is just regex "
-    "matching on the job description text, so treat the counts as roughly right, not exact."
-)
-
+st.title("India Data Analyst Job Market")
+st.caption("Live Adzuna API snapshot • regex skill extraction • SQLite aggregation • Streamlit")
+st.info("Scope: this app analyses the Adzuna postings collected for this refresh. It is not a complete representation of the India job market.")
 if not app_id or not app_key:
-    st.error(
-        "Adzuna API keys aren't configured for this app. "
-        "(If this is your deployment: add ADZUNA_APP_ID and ADZUNA_APP_KEY "
-        "under Settings → Secrets in Streamlit Cloud, then reboot the app.)"
-    )
-    st.stop()
-
+    st.info("Add Adzuna credentials in the sidebar or Streamlit secrets, then select Fetch live data."); st.stop()
 if refresh or "jobs_df" not in st.session_state:
-    with st.spinner(f"Pulling live postings from Adzuna ({num_pages * RESULTS_PER_PAGE} max)..."):
-        df = fetch_jobs(app_id, app_key, search_term, "in", num_pages)
-        st.session_state["jobs_df"] = df
-        st.session_state["fetched_at"] = pd.Timestamp.now()
-
-df = st.session_state.get("jobs_df", pd.DataFrame())
-
+    with st.spinner("Fetching and validating live job postings..."):
+        data, note = fetch_jobs(app_id, app_key, search_term, "in", num_pages)
+    st.session_state["jobs_df"], st.session_state["collection_note"], st.session_state["fetched_at_utc"] = data, note, datetime.now(timezone.utc)
+df = st.session_state.get("jobs_df", pd.DataFrame(columns=BASE_COLUMNS))
 if df.empty:
-    st.error("No data returned. Check your API credentials and try again.")
-    st.stop()
+    st.error(st.session_state.get("collection_note", "No data returned. Check credentials and try again.")); st.stop()
+st.caption(f"Last refreshed: {st.session_state['fetched_at_utc'].strftime('%Y-%m-%d %H:%M UTC')} • {len(df):,} unique postings • {st.session_state['collection_note']}")
 
-st.caption(f"Last fetched: {st.session_state['fetched_at'].strftime('%Y-%m-%d %H:%M:%S')} · {len(df)} unique postings loaded")
-
-conn = load_to_sqlite(df)
-
-# --- Filters ---------------------------------------------------------------
-
-col_f1, col_f2 = st.columns(2)
-with col_f1:
-    all_cities = sorted(df.loc[df["location"] != search_term.title(), "location"].dropna().unique().tolist())
-    selected_cities = st.multiselect("Filter by city", options=all_cities)
-with col_f2:
-    selected_skills = st.multiselect("Filter: must mention skill", options=list(SKILLS.keys()))
-
+left_filter, right_filter = st.columns(2)
+with left_filter:
+    selected_cities = st.multiselect("Filter by listed location", sorted(df["location"].dropna().unique()))
+with right_filter:
+    selected_skills = st.multiselect("Filter: must mention each selected skill", list(SKILLS))
 filtered = df.copy()
-if selected_cities:
-    filtered = filtered[filtered["location"].isin(selected_cities)]
-for skill in selected_skills:
-    filtered = filtered[filtered[skill] == True]
+if selected_cities: filtered = filtered[filtered["location"].isin(selected_cities)]
+for skill in selected_skills: filtered = filtered[filtered[skill]]
+if filtered.empty:
+    st.warning("No postings match these filters. Adjust the filters to continue."); st.stop()
 
-st.markdown(f"**{len(filtered)} postings** match current filters (of {len(df)} total).")
-
-# --- KPI row -----------------------------------------------------------
-
-k1, k2, k3, k4 = st.columns(4)
-k1.metric("Total postings", len(filtered))
-k2.metric("Unique companies", filtered["company"].nunique())
-k3.metric("Unique cities", filtered["location"].nunique())
-salary_disclosed = filtered["salary_min"].notna().sum()
-k4.metric("Salary disclosed", f"{salary_disclosed} ({salary_disclosed/len(filtered)*100:.0f}%)" if len(filtered) else "0")
-
+salary_records = filtered["salary_min"].notna() | filtered["salary_max"].notna()
+k1,k2,k3,k4 = st.columns(4)
+k1.metric("Filtered postings", f"{len(filtered):,}"); k2.metric("Unique companies", f"{filtered['company'].nunique():,}")
+k3.metric("Listed locations", f"{filtered['location'].nunique():,}"); k4.metric("Salary records", f"{salary_records.sum():,} ({salary_records.mean():.0%})")
 st.divider()
+left,right = st.columns(2)
+with left:
+    st.subheader("Skill demand")
+    skill_data = (pd.Series({s:int(filtered[s].sum()) for s in SKILLS}).sort_values(ascending=False) / len(filtered) * 100).rename_axis("skill").reset_index(name="posting_share")
+    st.altair_chart(alt.Chart(skill_data).mark_bar(color="#245B88").encode(x=alt.X("posting_share:Q",title="Postings mentioning skill (%)"),y=alt.Y("skill:N",sort="-x",title=None),tooltip=["skill",alt.Tooltip("posting_share:Q",format=".1f")]).properties(height=460),use_container_width=True)
+with right:
+    st.subheader("Location concentration")
+    city_data = filtered["location"].value_counts().head(12).rename_axis("location").reset_index(name="postings")
+    st.altair_chart(alt.Chart(city_data).mark_bar(color="#B64C3B").encode(x=alt.X("postings:Q",title="Postings"),y=alt.Y("location:N",sort="-x",title=None),tooltip=["location","postings"]).properties(height=460),use_container_width=True)
 
-# --- Skill demand chart -----------------------------------------------------
-
-st.subheader("Most In-Demand Skills")
-skill_counts = pd.Series({s: int(filtered[s].sum()) for s in SKILLS}).sort_values(ascending=False)
-skill_pct = (skill_counts / max(len(filtered), 1) * 100).reset_index()
-skill_pct.columns = ["skill", "pct"]
-
-chart = alt.Chart(skill_pct).mark_bar(color="#2E5A87").encode(
-    x=alt.X("pct:Q", title="% of postings mentioning skill"),
-    y=alt.Y("skill:N", sort="-x", title=None),
-    tooltip=["skill", alt.Tooltip("pct:Q", format=".1f")],
-).properties(height=450)
-st.altair_chart(chart, use_container_width=True)
-
-# --- City concentration chart ----------------------------------------------
-
-st.subheader("Where Are the Jobs?")
-city_counts = filtered[filtered["location"] != search_term.title()]["location"].value_counts().head(12).reset_index()
-city_counts.columns = ["city", "postings"]
-
-city_chart = alt.Chart(city_counts).mark_bar(color="#C0392B").encode(
-    x=alt.X("postings:Q"),
-    y=alt.Y("city:N", sort="-x", title=None),
-    tooltip=["city", "postings"],
-).properties(height=350)
-st.altair_chart(city_chart, use_container_width=True)
-
-# --- SQL-powered top companies ----------------------------------------------
-
-st.subheader("Top Hiring Companies (via SQL query)")
-query = """
-    SELECT company, COUNT(*) as num_postings
-    FROM jobs
-    WHERE company IS NOT NULL
-    GROUP BY company
-    ORDER BY num_postings DESC
-    LIMIT 10
-"""
-top_companies = pd.read_sql(query, conn)
+st.subheader("Top hiring companies")
+top_companies = sqlite_query(filtered, "SELECT company, COUNT(*) AS postings FROM jobs WHERE company IS NOT NULL AND TRIM(company) <> '' GROUP BY company ORDER BY postings DESC, company LIMIT 10")
+st.caption("This SQLite query runs against the currently filtered postings.")
 st.dataframe(top_companies, use_container_width=True, hide_index=True)
-
-# --- Raw data / export -------------------------------------------------
-
-with st.expander("View raw filtered data"):
-    st.dataframe(
-        filtered[["title", "company", "location", "created", "salary_min", "salary_max", "redirect_url"]],
-        use_container_width=True,
-        hide_index=True,
-    )
-    st.download_button(
-        "Download filtered data as CSV",
-        data=filtered.to_csv(index=False).encode("utf-8"),
-        file_name="india_data_analyst_jobs.csv",
-        mime="text/csv",
-    )
-
-st.caption(
-    "Data via the Adzuna API (they aggregate from company career pages and job boards, "
-    "so this isn't the entire Indian job market, just what Adzuna has indexed). "
-    "Salary numbers are only shown when an employer actually disclosed them -- "
-    "most Indian postings in this dataset didn't."
-)
+st.subheader("Salary transparency")
+if salary_records.any():
+    disclosed = filtered.loc[salary_records,["salary_min","salary_max","salary_is_predicted"]].copy()
+    disclosed["salary_midpoint"] = disclosed[["salary_min","salary_max"]].mean(axis=1)
+    st.metric("Median advertised salary midpoint", f"₹{disclosed['salary_midpoint'].median():,.0f}")
+    st.caption(f"Based on {len(disclosed):,} salary records; {disclosed['salary_is_predicted'].fillna(False).astype(bool).mean():.0%} are API-predicted. Treat this as indicative, not a market benchmark.")
+else:
+    st.info("No salary fields are available for the active filters. Do not draw salary conclusions from this selection.")
+with st.expander("View and export filtered postings"):
+    display_cols = ["title","company","location","created","salary_min","salary_max","salary_is_predicted","redirect_url"]
+    st.dataframe(filtered[display_cols],use_container_width=True,hide_index=True)
+    st.download_button("Download filtered data as CSV",filtered.to_csv(index=False).encode("utf-8"),"india_data_analyst_jobs.csv","text/csv")
+st.caption("Limitations: Adzuna is an aggregator; coverage changes. Regex skill matching can miss implicit skills or match ambiguous terms. Salary fields may be absent, predicted, or non-comparable.")
