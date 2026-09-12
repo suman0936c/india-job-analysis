@@ -62,6 +62,6 @@ The app reads configured Streamlit secrets without rendering their values in the
 | File | Purpose |
 |---|---|
 | app.py | Streamlit application, API collection, skill extraction, SQLite query, and visuals |
-| requirements.txt | Runtime dependencies |
+| requirements.txt | Runtime dependencies, including Altair 6 for Python 3.14 compatibility |
 | secrets.toml.example | Safe template for API credentials |
 | .gitignore | Prevents secrets, environments, caches, and exports from being committed |
